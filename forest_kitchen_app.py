@@ -704,14 +704,38 @@ def load_trained_model():
         if not MODEL_MODULE_AVAILABLE:
             return None, "module_missing"
         
+        # Try to load the hybrid model
         model_path = Path("models")
         if model_path.exists():
+            # Check if model files exist
+            required_files = [
+                "model_config.pkl",
+                "cf_model.pkl", 
+                "cb_model.pkl",
+                "tfidf_ingredients.pkl",
+                "tfidf_tags.pkl"
+            ]
+            
+            missing_files = []
+            for file in required_files:
+                if not (model_path / file).exists():
+                    missing_files.append(file)
+            
+            if missing_files:
+                print(f"Missing model files: {missing_files}")
+                return None, "files_missing"
+            
+            # Load the hybrid model
+            from recommendation_models import HybridRecommender
             model = HybridRecommender.load_model("models")
+            print("✅ Hybrid model loaded successfully!")
             return model, "loaded"
         else:
+            print("❌ Models directory not found")
             return None, "not_found"
+            
     except Exception as e:
-        print(f"Model loading error: {str(e)}")
+        print(f"❌ Model loading error: {str(e)}")
         return None, "error"
 
 @st.cache_data(show_spinner=False)
@@ -969,8 +993,6 @@ def create_sample_data():
         recipes.append(recipe)
     
     return pd.DataFrame(recipes)
-        
-    return pd.DataFrame(recipes)
 
 # =============================================================================
 # RECOMMENDATION ENGINE
@@ -1018,26 +1040,39 @@ class DreamyRecommendationEngine:
             return self.get_fallback_recommendations(n_recommendations), False
     
     def get_ai_recommendations(self, user_preferences, n_recommendations):
-        """AI-based recommendations"""
+        """AI-based recommendations using trained hybrid model"""
         try:
-            # Create synthetic user ID
+            # Create user ID from preferences (or use real user ID if available)
             user_id = hash(str(sorted(user_preferences.items()))) % 10000
+            
+            # Get recommendations from hybrid model
             recommendations = self.model.recommend(user_id, n_recommendations * 2)
+            
+            print(f"🤖 Hybrid model returned {len(recommendations)} recommendations")
             
             recommended_recipes = []
             for recipe_id, score in recommendations[:n_recommendations]:
+                # Find recipe data
                 recipe_data = self.recipes_df[self.recipes_df['id'] == recipe_id]
                 if not recipe_data.empty:
                     recipe = recipe_data.iloc[0].to_dict()
                     recipe['ai_score'] = float(score)
-                    recipe['recommendation_source'] = 'AI Model'
-                    recipe['explanation'] = f"🤖 AI confidence: {score:.0%}"
+                    recipe['recommendation_source'] = 'Hybrid AI Model (CF + Content)'
+                    recipe['explanation'] = f"🤖 Hybrid score: {score:.1%} (60% collaborative + 40% content)"
                     recommended_recipes.append(recipe)
+                else:
+                    print(f"⚠️ Recipe {recipe_id} not found in dataframe")
+            
+            if not recommended_recipes:
+                print("❌ No valid recommendations from hybrid model, falling back to content-based")
+                return self.get_content_recommendations(user_preferences, n_recommendations), False
             
             return recommended_recipes, True
             
         except Exception as e:
-            print(f"AI recommendation failed: {str(e)}")
+            print(f"❌ Hybrid model recommendation failed: {str(e)}")
+            print(f"Model status: {self.model_status}")
+            print(f"Model object: {type(self.model)}")
             return self.get_content_recommendations(user_preferences, n_recommendations), False
     
     def get_content_recommendations(self, user_preferences, n_recommendations=9):
@@ -1332,13 +1367,30 @@ def render_model_status():
     if model_status == "loaded":
         st.markdown(f"""
         <div class="metric-card">
-            <h4 style="margin: 0;">🤖 AI Model: ACTIVE ✨</h4>
+            <h4 style="margin: 0;">🤖 Hybrid AI Model: ACTIVE ✨</h4>
             <p style="margin: 0.5rem 0 0 0; color: #718096;">
                 📚 {data_status.get('recipes', 0):,} recipes • 🧠 {data_status.get('interactions', 0):,} interactions
+                <br>🔄 SVD Collaborative Filtering + Content-Based (60% + 40%)
             </p>
         </div>
         """, unsafe_allow_html=True)
         return True
+    elif model_status == "files_missing":
+        st.markdown("""
+        <div class="metric-card">
+            <h4 style="margin: 0; color: #E53E3E;">⚠️ Model Files Missing</h4>
+            <p style="margin: 0.5rem 0 0 0; color: #718096;">Train the model first to enable AI recommendations</p>
+        </div>
+        """, unsafe_allow_html=True)
+        return False
+    elif model_status == "module_missing":
+        st.markdown("""
+        <div class="metric-card">
+            <h4 style="margin: 0; color: #D69E2E;">⚠️ recommendation_models.py Missing</h4>
+            <p style="margin: 0.5rem 0 0 0; color: #718096;">Add the recommendation models file to enable AI features</p>
+        </div>
+        """, unsafe_allow_html=True)
+        return False
     else:
         st.markdown("""
         <div class="metric-card">
